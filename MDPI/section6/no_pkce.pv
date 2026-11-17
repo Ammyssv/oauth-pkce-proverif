@@ -1,0 +1,409 @@
+(* no_pkce.pv
+   Variant of main.pv without PKCE (Section 6; results in Table 4).
+   Only change: the PKCE check s256(codeVerifier) = originalChallenge is replaced
+   by true (Line 12 of Listing 3 in the paper).
+   Expected differences from main.pv: secrecy of the access token, Q2, Q5+, Q6+,
+   Q16+, S1, S2, S3 and S5 are false (Section 6.4). *)
+
+set preciseActions = true.
+
+(* ==== CRYPTOGRAPHIC PRIMITIVES ==== *)
+
+fun sha256(bitstring): bitstring.
+fun base64url(bitstring): bitstring.
+
+fun s256(bitstring): bitstring.
+equation forall x: bitstring; s256(x) = base64url(sha256(x)).
+
+fun senc(bitstring, bitstring): bitstring.
+reduc forall m: bitstring, k: bitstring; sdec(senc(m, k), k) = m.
+
+fun sign(bitstring, bitstring): bitstring.
+fun pk(bitstring): bitstring.
+reduc forall m: bitstring, sk: bitstring; verify(sign(m, sk), pk(sk)) = m.
+
+(* Public-key encryption to the token endpoint (server-authenticated TLS) *)
+fun aenc(bitstring, bitstring): bitstring.
+reduc forall m: bitstring, sk: bitstring; adec(aenc(m, pk(sk)), sk) = m.
+
+fun mac(bitstring, bitstring): bitstring.
+reduc forall m: bitstring, k: bitstring; verify_mac(mac(m, k), m, k) = true.
+
+(* ==== COUNTER ==== *)
+type counter.
+const c0: counter.
+const c1: counter.
+fun succ(counter): counter.
+equation succ(c0) = c1.
+
+(* ==== TIMESTAMP ==== *)
+type timestamp.
+const t0: timestamp.
+const t1: timestamp.
+
+(* ==== CHANNELS ==== *)
+free c: channel.
+free browser: channel [private].
+
+(* ==== CONSTANTS ==== *)
+const GRANT_TYPE_AUTH_CODE: bitstring.
+const CODE_CHALLENGE_METHOD_S256: bitstring.
+const INVALID_GRANT: bitstring.
+const INVALID_REQUEST: bitstring.
+const TOKEN_RESPONSE: bitstring.
+
+(* ==== TABLE ==== *)
+table UsedAuthCodes(bitstring, counter, bitstring).
+
+(* ==== EVENTS ==== *)
+event UserAuthenticated(bitstring).
+event AuthCodeIssued(bitstring).
+event ClientSentTokenRequest(bitstring).
+event MACVerified(bitstring).
+event SignatureVerified(bitstring).
+event CodeExchangeInitiated(bitstring).
+event CounterValidated(bitstring, counter).
+event ReplayDetectedAndBlocked(bitstring, bitstring).   (* code, request id *)
+event CodeConsumed(bitstring, bitstring).               (* code, request id *)
+event CounterIncremented(counter, counter).
+event CounterUsedInOrder(counter).
+event AuthCodeBindingVerified(bitstring, bitstring).
+event PKCEChallengeVerified(bitstring).
+event CodeUsedSuccessfully(bitstring, counter).
+event AccessTokenIssued(bitstring, bitstring, bitstring).
+event TamperedMessageDetected(bitstring).
+event InjectionAttemptBlocked(bitstring).
+
+(* Begin events for placement comparison *)
+event BeginBeforeSignature(bitstring).      (* P1 *)
+event BeginAfterReplayCheck(bitstring).     (* P3 *)
+
+(* Sent event: fired by legitimate and malicious clients *)
+event TokenRequestSent(bitstring).
+
+(* Malicious client events *)
+event AttackerInterceptedAuthCode(bitstring).
+event AttackerAttemptedToUseCode(bitstring).
+event AttackerReceivedResponse(bitstring).
+
+(* Real token issued for a code *)
+event TokenIssuedFor(bitstring, bitstring).
+
+(* One event per redemption, with a fresh value (used in Q-SU) *)
+event Redeemed(bitstring, bitstring).
+
+(* Atomicity assumption (not a verified property): the server checks and records
+   a used code in UsedAuthCodes atomically, e.g. with a unique constraint in a
+   database or an atomic compare-and-swap. The restriction excludes every trace
+   in which the same code is recorded twice. *)
+event Stored(bitstring, bitstring).
+event PKCEOk(bitstring, bitstring).                     (* code, request id *)
+restriction x: bitstring, s1: bitstring, s2: bitstring;
+      event(Stored(x, s1)) && event(Stored(x, s2)) ==> s1 = s2.
+
+(* Client-side token handling *)
+event ClientReceivedTokenResponse(bitstring).
+event ClientAcceptedToken(bitstring).
+event ClientRejectedToken(bitstring).
+
+event ClientStartedS(bitstring).
+event AuthCodeIssuedForS(bitstring, bitstring).
+event TokenIssuedForS(bitstring, bitstring, bitstring).
+event ClientAcceptedTokenS(bitstring, bitstring, bitstring).
+event ClientSentReqS(bitstring, bitstring).
+
+(* ==== SECURITY QUERIES ==== *)
+
+query attacker(new authCode).
+query attacker(new accessToken).
+query attacker(new codeVerifier).
+
+query x: bitstring, y: bitstring, z: bitstring;
+      event(AccessTokenIssued(x, y, z)) ==> event(UserAuthenticated(z)).
+
+query x: bitstring, y: bitstring, z: bitstring;
+      event(AccessTokenIssued(x, y, z)) ==> event(ClientSentTokenRequest(x)).
+
+query x: bitstring, y: bitstring, z: bitstring;
+      inj-event(AccessTokenIssued(x, y, z)) ==> inj-event(AuthCodeIssued(x)).
+
+query x: bitstring, y: bitstring, z: bitstring;
+      event(AccessTokenIssued(x, y, z)) ==> event(PKCEChallengeVerified(x)).
+
+query x: bitstring, y: bitstring, z: bitstring;
+      event(AccessTokenIssued(x, y, z)) ==> event(MACVerified(x)).
+
+(* P0 (single use): begin event at code issuance.
+   One AuthCodeIssued per code; two redemptions of the same code would need
+   two issuances, so a successful replay makes this query false. *)
+query x: bitstring, cnt: counter;
+      inj-event(CodeUsedSuccessfully(x, cnt)) ==> inj-event(AuthCodeIssued(x)).
+
+query x: bitstring, y: bitstring, z: bitstring;
+      event(AccessTokenIssued(x, y, z)) ==> event(AuthCodeBindingVerified(x, y)).
+
+(* PL2 (reference only): begin event after the signature check.
+   Begin and end are in the same server thread, so every end has its own
+   begin even under replay. *)
+query x: bitstring, cnt: counter;
+      inj-event(CodeUsedSuccessfully(x, cnt)) ==> inj-event(CodeExchangeInitiated(x)).
+
+query a: counter, b: counter;
+      event(CounterIncremented(a, b)) ==> b = succ(a).
+query a: counter;
+      event(CounterUsedInOrder(succ(a))) ==> event(CounterUsedInOrder(a)).
+
+query x: bitstring, y: bitstring, z: bitstring;
+      event(AccessTokenIssued(x, y, z)) ==> event(SignatureVerified(x)).
+
+query x: bitstring;
+      event(InjectionAttemptBlocked(x)) ==> event(TamperedMessageDetected(x)).
+
+query x: bitstring, y: bitstring, z: bitstring;
+      event(AccessTokenIssued(x, y, z)) ==> event(AuthCodeIssued(x)).
+
+(* ==== Q5+, Q6+, Q16+ (checked with the real token) ==== *)
+
+(* Q5+: attacker intercepts code x, and knows the real token issued for x *)
+query x: bitstring, tok: bitstring;
+      event(AttackerInterceptedAuthCode(x)) && event(TokenIssuedFor(x, tok))
+      && attacker(tok) ==> false.
+
+(* Q6+: same, with the attacker also trying to use code x *)
+query x: bitstring, tok: bitstring;
+      event(AttackerInterceptedAuthCode(x)) && event(AttackerAttemptedToUseCode(x))
+      && event(TokenIssuedFor(x, tok)) && attacker(tok) ==> false.
+
+(* Q16+: tampering is detected for x, and the attacker knows a real token issued for x *)
+query x: bitstring, tok: bitstring;
+      event(TamperedMessageDetected(x)) && event(TokenIssuedFor(x, tok))
+      && attacker(tok) ==> false.
+
+(* ==== PLACEMENT COMPARISON (PL1, PL3), REFERENCE ONLY ==== *)
+(* Same reason as PL2: begin and end are in the same thread. *)
+
+(* PL1: begin before MAC / signature verification *)
+query x: bitstring, cnt: counter;
+      inj-event(CodeUsedSuccessfully(x, cnt)) ==> inj-event(BeginBeforeSignature(x)).
+
+(* PL3: begin after the client identifier, redirect URI and counter checks *)
+query x: bitstring, cnt: counter;
+      inj-event(CodeUsedSuccessfully(x, cnt)) ==> inj-event(BeginAfterReplayCheck(x)).
+
+(* Q-SU (single use): stated directly on the redemption events *)
+query x: bitstring, r1: bitstring, r2: bitstring;
+      event(Redeemed(x, r1)) && event(Redeemed(x, r2)) ==> r1 = r2.
+
+(* S1 *)
+query s: bitstring, x: bitstring, t: bitstring;
+      event(ClientAcceptedTokenS(s, x, t)) ==> event(TokenIssuedForS(s, x, t)).
+(* S2 *)
+query s: bitstring, x: bitstring, t: bitstring;
+      event(ClientAcceptedTokenS(s, x, t)) ==> event(AuthCodeIssuedForS(s, x)).
+(* S3 *)
+query s: bitstring, x: bitstring, t: bitstring;
+      inj-event(ClientAcceptedTokenS(s, x, t)) ==> inj-event(TokenIssuedForS(s, x, t)).
+(* S5 *)
+query s: bitstring, x: bitstring, t: bitstring;
+      event(TokenIssuedForS(s, x, t)) ==> event(ClientSentReqS(s, x)).
+(* B1: replay is detected only for a request that itself passed PKCE *)
+query x: bitstring, r: bitstring;
+      event(ReplayDetectedAndBlocked(x, r)) ==> event(PKCEOk(x, r)).
+(* B2: a code is consumed only by a request that itself passed PKCE *)
+query x: bitstring, r: bitstring;
+      event(CodeConsumed(x, r)) ==> event(PKCEOk(x, r)).
+(* S4 *)
+query s: bitstring, x: bitstring, t: bitstring;
+      event(ClientAcceptedTokenS(s, x, t)) ==> event(ClientStartedS(s)).
+
+(* ==== REACHABILITY (R1-R17) ==== *)
+(* R1 *)  query x: bitstring, y: bitstring, z: bitstring; event(AccessTokenIssued(x, y, z)).
+(* R2 *)  query x: bitstring, cnt: counter; event(CodeUsedSuccessfully(x, cnt)).
+(* R3 *)  query x: bitstring; event(PKCEChallengeVerified(x)).
+(* R4 *)  query x: bitstring, r: bitstring; event(ReplayDetectedAndBlocked(x, r)).
+(* R5 *)  query x: bitstring; event(TamperedMessageDetected(x)).
+(* R6 *)  query x: bitstring; event(ClientSentTokenRequest(x)).
+(* R7 *)  query x: bitstring; event(BeginBeforeSignature(x)).
+(* R8 *)  query x: bitstring; event(BeginAfterReplayCheck(x)).
+(* R9 *)  query x: bitstring; event(TokenRequestSent(x)).
+(* R10 *) query x: bitstring; event(AttackerInterceptedAuthCode(x)).
+(* R11 *) query x: bitstring; event(AttackerAttemptedToUseCode(x)).
+(* R12 *) query x: bitstring, tok: bitstring; event(TokenIssuedFor(x, tok)).
+(* R13 *) query x: bitstring; event(ClientAcceptedToken(x)).
+(* R14 *) query x: bitstring; event(ClientRejectedToken(x)).
+(* R15 *) query x: bitstring; event(AttackerReceivedResponse(x)).
+(* R16 *) query x: bitstring, r: bitstring; event(Redeemed(x, r)).
+(* R17 *) query s: bitstring, x: bitstring, t: bitstring; event(ClientAcceptedTokenS(s, x, t)).
+
+(* ==== AUTHORIZATION SERVER ==== *)
+
+let AuthorizationServer(serverKey: bitstring, serverSigKey: bitstring, tlsSK: bitstring) =
+    in(browser, (clientId: bitstring, redirectUri: bitstring, state: bitstring,
+                 codeChallenge: bitstring, codeChallengeMethod: bitstring,
+                 requestTime: timestamp, csid: bitstring));
+    new userId: bitstring;
+    event UserAuthenticated(userId);
+
+    new authCode: bitstring;
+    let sessionID = csid in
+
+    event CounterUsedInOrder(c0);
+    let nextCounter = succ(c0) in
+    event CounterIncremented(c0, nextCounter);
+    event CounterUsedInOrder(nextCounter);
+
+    let authCodeData = (authCode, clientId, codeChallenge, userId,
+                        requestTime, sessionID, nextCounter, redirectUri) in
+    let authCodeSig = sign(authCodeData, serverSigKey) in
+    let encryptedAuthCode = senc((authCodeData, authCodeSig), serverKey) in
+    event AuthCodeIssued(encryptedAuthCode);
+    event AuthCodeIssuedForS(sessionID, encryptedAuthCode);
+
+    let authCodeMAC = mac(encryptedAuthCode, serverKey) in
+    out(c, (encryptedAuthCode, authCodeMAC, state, nextCounter));
+
+    (
+        (* Token endpoint, replicated: the same code may be presented any number of times *)
+        ! in(c, tokenRequestMsg: bitstring);
+        new rid: bitstring;   (* fresh identifier for this request *)
+        let (tokenReqData: bitstring, authCodeMACReceived: bitstring) = tokenRequestMsg in
+        let (grantType: bitstring, clientIdToken: bitstring, authCodeReceived: bitstring,
+             redirectUriToken: bitstring, encryptedCodeVerifier: bitstring,
+             tokenRequestTime: timestamp, requestCounter: counter) = tokenReqData in
+
+        (* PL1 *)
+        event BeginBeforeSignature(authCodeReceived);
+
+        let macOK = verify_mac(authCodeMACReceived, authCodeReceived, serverKey) in
+        (
+            event MACVerified(authCodeReceived);
+            let (authCodeContent: bitstring, authCodeSigReceived: bitstring) =
+                sdec(authCodeReceived, serverKey) in
+            let (originalAuthCode: bitstring, originalClientId: bitstring,
+                 originalChallenge: bitstring, originalUserId: bitstring,
+                 originalTimestamp: timestamp, originalSessionID: bitstring,
+                 originalCounter: counter, originalRedirectUri: bitstring) = verify(authCodeSigReceived, pk(serverSigKey)) in
+            event SignatureVerified(authCodeReceived);
+
+            if originalAuthCode = authCode then
+            (* PL2 *)
+            event CodeExchangeInitiated(authCodeReceived);
+
+            if grantType = GRANT_TYPE_AUTH_CODE then
+            if clientIdToken = originalClientId then
+            if redirectUriToken = originalRedirectUri then   (* RFC 6749, Section 4.1.3 *)
+            if requestCounter = originalCounter then
+
+            (* PL3 *)
+            event BeginAfterReplayCheck(authCodeReceived);
+
+            event CounterValidated(authCodeReceived, requestCounter);
+
+            let (boundCode: bitstring, codeVerifier: bitstring, reqSid: bitstring, respKey: bitstring) =
+                adec(encryptedCodeVerifier, tlsSK) in
+            if boundCode = authCodeReceived then
+            if true then   (* VARIANT: PKCE check s256(codeVerifier) = originalChallenge replaced by true *)
+            (
+                (* Used-code check: lookup and record *)
+                event PKCEOk(authCodeReceived, rid);
+                get UsedAuthCodes(=originalAuthCode, =originalCounter, =originalSessionID) in
+                (
+                    event ReplayDetectedAndBlocked(authCodeReceived, rid);
+                    out(c, INVALID_GRANT)
+                )
+                else
+                new stId: bitstring;
+                event Stored(originalAuthCode, stId);
+                event CodeConsumed(authCodeReceived, rid);
+                insert UsedAuthCodes(originalAuthCode, originalCounter, originalSessionID);
+                (
+                event PKCEChallengeVerified(authCodeReceived);
+                event CodeUsedSuccessfully(authCodeReceived, requestCounter);
+                event AuthCodeBindingVerified(authCodeReceived, originalClientId);
+                new accessToken: bitstring;
+                event Redeemed(authCodeReceived, accessToken);
+                event AccessTokenIssued(authCodeReceived, clientIdToken, originalUserId);
+                event TokenIssuedFor(authCodeReceived, accessToken);
+                event TokenIssuedForS(originalSessionID, authCodeReceived, accessToken);
+                (* Token response, encrypted under the response key of this request *)
+                out(c, senc((TOKEN_RESPONSE, authCodeReceived, originalSessionID, accessToken), respKey))
+                )
+            )
+            else
+                out(c, INVALID_GRANT)
+        )
+        else
+        (
+            event TamperedMessageDetected(authCodeReceived);
+            event InjectionAttemptBlocked(authCodeReceived);
+            out(c, INVALID_REQUEST)
+        )
+    ).
+
+(* ==== LEGITIMATE CLIENT ==== *)
+
+let LegitimateClient(clientId: bitstring, redirectUri: bitstring, tlsPK: bitstring) =
+    new codeVerifier: bitstring;
+    let codeChallenge = s256(codeVerifier) in
+    new state: bitstring;
+    new csid: bitstring;
+    event ClientStartedS(csid);
+    out(c, csid);
+    out(browser, (clientId, redirectUri, state, codeChallenge,
+                  CODE_CHALLENGE_METHOD_S256, t0, csid));
+    in(c, (authCode: bitstring, authCodeMAC: bitstring,
+           stateReceived: bitstring, receivedCounter: counter));
+    if stateReceived = state then
+    new respKey: bitstring;   (* fresh response key: models a new TLS connection *)
+    let encryptedCodeVerifier = aenc((authCode, codeVerifier, csid, respKey), tlsPK) in
+    let tokenReqData = (GRANT_TYPE_AUTH_CODE, clientId, authCode,
+                        redirectUri, encryptedCodeVerifier, t1, receivedCounter) in
+    event ClientSentTokenRequest(authCode);
+    event ClientSentReqS(csid, authCode);
+    event TokenRequestSent(authCode);
+    out(c, (tokenReqData, authCodeMAC));
+    in(c, tokenResponse: bitstring);
+    event ClientReceivedTokenResponse(authCode);
+    (* Accept only a tagged token response for this code *)
+    let (=TOKEN_RESPONSE, =authCode, rcvSid: bitstring, receivedToken: bitstring) =
+        sdec(tokenResponse, respKey) in
+    (
+        event ClientAcceptedToken(authCode);
+        event ClientAcceptedTokenS(csid, authCode, receivedToken)
+    )
+    else
+    (
+        event ClientRejectedToken(authCode)
+    ).
+
+(* ==== MALICIOUS CLIENT ==== *)
+(* No state check. Sends any request the attacker chooses. *)
+
+let MaliciousClient() =
+    in(c, (interceptedCode: bitstring, interceptedMAC: bitstring,
+           interceptedState: bitstring, interceptedCounter: counter));
+    event AttackerInterceptedAuthCode(interceptedCode);
+    in(c, (anyReqData: bitstring, anyReqMAC: bitstring));
+    let (g: bitstring, cid: bitstring, usedCode: bitstring, ruri: bitstring,
+         ver: bitstring, tReq: timestamp, cntReq: counter) = anyReqData in
+    event AttackerAttemptedToUseCode(usedCode);
+    event TokenRequestSent(usedCode);
+    out(c, (anyReqData, anyReqMAC));
+    in(c, response: bitstring);
+    event AttackerReceivedResponse(response).
+
+(* ==== MAIN PROCESS ==== *)
+
+process
+    new serverKey: bitstring;
+    new serverSigKey: bitstring;
+    new tlsSK: bitstring;
+    new legitimateClientId: bitstring;
+    new redirectUri: bitstring;
+    out(c, (legitimateClientId, redirectUri));   (* client_id and redirect_uri are public *)
+    out(c, pk(tlsSK));   (* the attacker can open its own connection to the server *)
+    (
+        !AuthorizationServer(serverKey, serverSigKey, tlsSK)
+      | !LegitimateClient(legitimateClientId, redirectUri, pk(tlsSK))
+      | !MaliciousClient()
+    )
