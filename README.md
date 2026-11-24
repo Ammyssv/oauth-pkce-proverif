@@ -14,9 +14,9 @@ It contains every model whose results are reported in the paper, the command to 
 
 ```
 README.md
-section6/                       Main model and its variants (Section 6, Tables 3 and 4)
-section7-3-replay-resistant/    Replay-resistant channel and client retries (Section 7.3, Table 5)
-section7-3-shared-key-tls/      Alternative TLS abstraction with one shared key (Section 7.3)
+MDPI/section6/                       Main model, its variants and the negative control (Section 6, Tables 3 and 4)
+MDPI/section7-3-replay-resistant/    Replay-resistant channel and client retries (Section 7.3, Table 5)
+MDPI/section7-3-shared-key-tls/      Alternative TLS abstraction with one shared key (Section 7.3)
 ```
 
 Each model `<name>.pv` has its output `<name>.txt` in the same folder.
@@ -24,7 +24,7 @@ Each model `<name>.pv` has its output `<name>.txt` in the same folder.
 ## How to run
 
 ```
-proverif section6/main.pv > section6/main.txt
+proverif MDPI/section6/main.pv > MDPI/section6/main.txt
 ```
 
 Replace the path with any other model. The results of all queries are listed under `Verification summary` at the end of each output.
@@ -35,14 +35,18 @@ For a reachability query `query event(E).`, ProVerif reports `not event(E) is fa
 
 All models in this folder include the request identifier `rid` used by properties B1 and B2. The main model has 29 security queries and 17 reachability queries (R1 to R17).
 
-| File | Change from the main model | Results that differ from the main model |
-|---|---|---|
-| `main` | (main model, Sections 4 and 5) | none: all 29 security queries are true, and all reachability queries are reachable |
-| `no_used_code_check` | Lookup and record of the used code removed (Lines 3–12 of Listing 4) | P0, Q-SU and Q7 are false (token-request replay, Section 6.3); R4 is not reachable |
-| `no_pkce` | PKCE check `s256(codeVerifier) = originalChallenge` replaced by `true` (Line 12 of Listing 3) | Secrecy of the access token, Q2, Q5+, Q6+, Q16+, S1, S2, S3 and S5 are false (Section 6.4) |
-| `no_lookup` | Lookup (`get`) removed (Line 3 of Listing 4); record and restriction of Listing 5 kept | R4 is not reachable; all security queries remain true |
-| `no_restriction` | Restriction of Listing 5 (atomicity assumption) removed; lookup and record kept | P0, Q-SU and Q7 are false (two requests pass the lookup before either records the code, Section 6.2); R4 cannot be proved |
-| `negative_control_record_before_pkce` | Lookup and record (Lines 3–12 of Listing 4) moved before the PKCE check | B1 and B2 are false (a request with a wrong verifier consumes the code, Section 6.2) |
+The first column gives the name of each model as it appears in the paper (column headings of Table 4).
+
+| Name in the paper | File | Change from the main model | Results that differ from the main model |
+|---|---|---|---|
+| Main | `main` | (main model, Sections 4 and 5) | none: all 29 security queries are true, and all reachability queries are reachable |
+| No used-code check | `no_used_code_check` | Lookup and record of the used code removed (Lines 3–12 of Listing 4) | P0, Q-SU and Q7 are false (token-request replay, Section 6.3); R4 is not reachable; B1 and B2 hold vacuously |
+| No PKCE | `no_pkce` | PKCE check `s256(codeVerifier) = originalChallenge` replaced by `true` (Line 12 of Listing 3) | Secrecy of the access token, Q2, Q5+, Q6+, Q16+, S1, S2, S3 and S5 are false (Section 6.4); B1 and B2 hold vacuously |
+| No lookup | `no_lookup` | Lookup (`get`) removed (Line 3 of Listing 4); record and restriction of Listing 5 kept | R4 is not reachable; all security queries remain true; B1 holds vacuously |
+| No restriction | `no_restriction` | Restriction of Listing 5 (atomicity assumption) removed; lookup and record kept | P0, Q-SU and Q7 are false (two requests pass the lookup before either records the code, Section 6.2); R4 cannot be proved |
+| Reordered checks (negative control) | `negative_control_record_before_pkce` | Lookup and record (Lines 3–12 of Listing 4) moved before the PKCE check | B1 and B2 are false (a request with a wrong verifier consumes the code, Section 6.2) |
+
+A result that holds vacuously is true only because the events of the query never occur or the checked step always succeeds (see the note under Table 4 of the paper).
 
 ## Section 7.3: replay-resistant channel and client retries (Table 5)
 
@@ -81,3 +85,4 @@ These two effects come from the shared-key abstraction, not from the protocol. T
 ## Notes
 
 - All outputs were produced with ProVerif 2.05 from exactly the model files in this repository.
+- The release tag `v1.0` marks the version of the models and outputs that corresponds to the results reported in the paper.
